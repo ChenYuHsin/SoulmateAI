@@ -37,7 +37,7 @@
         const box = document.getElementById('error-box');
         const txt = document.getElementById('error-msg');
         box.style.display = 'block';
-        txt.innerText = `⚠️ 程式錯誤 (Error):\n${msg}\n\nLine: ${line}\n\n建議：請確認您的瀏覽器支援 JavaScript，或重新整理頁面。`;
+        txt.innerText = `⚠️ 程式錯誤 (Error):\n${msg}\n\nLine: ${line}\n\n建議：請確認 API Key 是否正確。`;
         return false;
       };
     </script>
@@ -56,16 +56,13 @@
         // 🔐 API KEY 安全管理系統 (GitHub 公開版專用)
         // ==========================================
         const getApiKey = () => {
-            // 1. 先試著從瀏覽器記憶體拿
             let key = localStorage.getItem('gemini_api_key');
-            
-            // 2. 如果沒有，就跳出視窗問使用者
             if (!key) {
                 key = prompt("【Soulmate AI 安全啟動】\n\n請輸入您的 Google Gemini API Key 以繼續：\n(您的 Key 只會存在您的瀏覽器中，不會上傳伺服器)");
                 if (key) {
-                    localStorage.setItem('gemini_api_key', key); // 存起來，下次不用問
+                    localStorage.setItem('gemini_api_key', key);
                 } else {
-                    alert("未輸入 API Key，App 無法連線大腦 (Gemini)。\n請重新整理頁面輸入。");
+                    alert("未輸入 API Key，App 無法連線。請重新整理頁面輸入。");
                     throw new Error("User cancelled API Key input");
                 }
             }
@@ -74,7 +71,7 @@
 
         // --- AI 核心 ---
         const getModel = (modelName = "gemini-1.5-flash", jsonMode = true) => {
-          const apiKey = getApiKey(); // 動態獲取 Key
+          const apiKey = getApiKey();
           const genAI = new GoogleGenerativeAI(apiKey);
           const safetySettings = [
             { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -85,32 +82,65 @@
           return genAI.getGenerativeModel({ model: modelName, generationConfig: jsonMode ? { responseMimeType: "application/json" } : {}, safetySettings });
         };
 
-        const fileToGenerativePart = async (file) => {
-          return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve({
-              inlineData: { data: reader.result.split(',')[1], mimeType: file.type }
+        // ★★★ 關鍵修復：圖片自動壓縮引擎 ★★★
+        // 這能解決 "Works in Studio, fails in App" 的問題
+        const compressImage = async (file) => {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        // 限制最大寬度為 1024px，保持比例 (足夠辨識文字，但體積小很多)
+                        const MAX_WIDTH = 1024;
+                        const scaleSize = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH;
+                        canvas.height = img.height * scaleSize;
+                        
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        
+                        // 轉為 JPEG 格式，品質 0.7 (大幅縮減體積)
+                        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                        resolve({
+                            inlineData: { data: dataUrl.split(',')[1], mimeType: 'image/jpeg' }
+                        });
+                    };
+                };
             });
-            reader.readAsDataURL(file);
-          });
         };
 
-        // 1. 媒體辨識
+        // 1. 媒體辨識 (Step 2 修復版)
         const extractChatFromMedia = async (file) => {
-            if (file.size > 10 * 1024 * 1024) throw new Error("檔案過大 (>10MB)。請改用「截圖」或「短影片」。");
-            const model = getModel("gemini-1.5-flash", true);
-            const mediaPart = await fileToGenerativePart(file);
-            const prompt = `Analyze this chat image or video. Transcribe conversation to JSON Array: [{"sender": "user"|"partner", "text": "content"}]. Rules: 'user' is usually right/green/blue side.`;
             try {
+                const model = getModel("gemini-1.5-flash", true);
+                
+                // 如果是圖片，使用壓縮引擎；如果是影片，直接讀取 (影片無法在前端壓縮，仍需限制大小)
+                let mediaPart;
+                if (file.type.startsWith('image/')) {
+                    mediaPart = await compressImage(file);
+                } else {
+                    if (file.size > 10 * 1024 * 1024) throw new Error("影片過大 (>10MB)。請改用「截圖」或「短影片」。");
+                    mediaPart = await new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve({ inlineData: { data: reader.result.split(',')[1], mimeType: file.type } });
+                        reader.readAsDataURL(file);
+                    });
+                }
+
+                const prompt = `Analyze this chat image/video. Transcribe conversation to JSON Array: [{"sender": "user"|"partner", "text": "content"}]. Rules: 'user' is usually right/green/blue side.`;
                 const result = await model.generateContent([prompt, mediaPart]);
                 const text = result.response.text().replace(/```json|```/g, '').trim();
                 return JSON.parse(text);
             } catch (e) {
                 console.error(e);
                 let msg = "辨識失敗。";
-                if(e.message.includes("413")) msg = "檔案太大了。";
-                else if(e.message.includes("400")) msg = "API Key 可能無效，請檢查權限。";
-                alert(msg);
+                if(e.message.includes("413")) msg = "檔案太大了 (Payload Limit)。請使用截圖，或裁切影片長度。";
+                else if(e.message.includes("400")) msg = "API Key 可能權限不足或過期。";
+                else if(e.toString().includes("Safety")) msg = "內容被安全過濾器阻擋 (Safety Filter)。";
+                alert(msg + "\n詳細錯誤：" + e.message);
                 return [];
             }
         };
