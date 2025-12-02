@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soulmate AI: The Deep Matchmaker (Vanilla JS)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Google GenAI SDK -->
+    <script type="importmap">
+    {
+      "imports": {
+        "@google/genai": "https://esm.run/@google/genai"
+      }
+    }
+    </script>
+
+    <style>
+        body {
+            background-color: #0f172a; /* slate-950 */
+            color: #e2e8f0; /* slate-200 */
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+        
+        /* Custom Scrollbar */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .animate-fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin-custom {
+            animation: spin 1s linear infinite;
+        }
+        
+        .hidden { display: none !important; }
+        
+        /* Glass effect */
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- App Container -->
+    <div id="app" class="min-h-screen flex flex-col max-w-7xl mx-auto p-4 md:p-6">
+        
+        <!-- Header -->
+        <header class="bg-slate-900 border-b border-slate-800 p-4 sticky top-0 z-50 rounded-xl mb-6 shadow-lg flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <i data-lucide="heart-handshake" class="text-pink-500 w-8 h-8"></i>
+                <h1 class="text-2xl font-bold bg-gradient-to-r from-pink-500 to-purple-500 bg-clip-text text-transparent">
+                    Soulmate AI
+                </h1>
+            </div>
+            <div class="flex gap-1 md:gap-2" id="step-indicators">
+                <!-- Steps injected via JS -->
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main id="main-content" class="flex-1 w-full animate-fade-in">
+            <!-- Content injected via JS -->
+        </main>
+
+        <!-- Footer -->
+        <footer class="mt-auto border-t border-slate-800 py-6 text-center text-slate-500 text-xs">
+            <p>&copy; 2024 Soulmate AI. Powered by Google Gemini 2.5 (Vanilla JS Version).</p>
+        </footer>
+
+    </div>
+
+    <!-- Modals (Overlay) -->
+    <div id="modal-overlay" class="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div id="modal-content" class="bg-slate-900 w-full max-w-5xl max-h-[90vh] rounded-2xl shadow-2xl border border-slate-700 flex flex-col overflow-hidden">
+            <!-- Dynamic Modal Content -->
+        </div>
+    </div>
+
+    <!-- MAIN SCRIPT -->
+    <script type="module">
+        import { GoogleGenAI } from "@google/genai";
+
+        // ==========================================
+        // 1. CONFIGURATION & STATE
+        // ==========================================
+        
+        // ★★★ 請在此填入您的 API KEY ★★★
+        const API_KEY = ''; 
+
+        // Constants
+        const CONSTANTS = {
+            MBTI: ['INTJ', 'INTP', 'ENTJ', 'ENTP', 'INFJ', 'INFP', 'ENFJ', 'ENFP', 'ISTJ', 'ISFJ', 'ESTJ', 'ESFJ', 'ISTP', 'ISFP', 'ESTP', 'ESFP'],
+            INCOME: ["50萬以下", "50-80萬", "80-120萬", "120-200萬", "200-300萬", "300萬以上", "不透漏"],
+            EDUCATION: ["高中職及以下", "專科", "大學", "碩士", "博士"],
+            RELIGION: ["無信仰", "佛教", "基督教", "天主教", "道教", "伊斯蘭教", "其他"],
+            SMOKING: ["不抽菸", "偶爾", "經常", "電子菸"],
+            DRINKING: ["不喝酒", "社交小酌", "經常"],
+            KIDS: ["想生", "不想生", "看情況", "已有小孩"]
+        };
+
+        // Global State
+        const state = {
+            currentStep: 1,
+            userProfile: {
+                // About Me
+                photo: '', name: '', age: 25, gender: '', height: 170, location: '',
+                education: '', job: '', income: '', mbti: '',
+                smoking: '', drinking: '', religion: '', wantKids: '',
+                interests: '', selfIntro: '',
+                // Partner Preferences
+                partnerAgeRange: '25-35', partnerHeight: '170+', partnerEducation: '不拘',
+                partnerIncome: '不拘', partnerSmoking: '不拘', partnerDrinking: '不拘',
+                partnerReligion: '不拘', partnerWantKids: '不拘',
+                partnerValues: '', dealBreakers: ''
+            },
+            candidates: [], 
+            activeCandidateId: null,
+            scenarios: [],
+            // Temp state for media import
+            importData: { file: null, preview: null, messages: [] }
+        };
+
+        // ==========================================
+        // 2. API SERVICE (Gemini)
+        // ==========================================
+
+        const getAI = () => {
+            if (!API_KEY) {
+                alert("API Key 遺失。請用文字編輯器開啟 HTML 檔案，填入您的 Google API Key。");
+                throw new Error("Missing API Key");
+            }
+            return new GoogleGenAI({ apiKey: API_KEY });
+        };
+
+        async function generateScreeningQuestions(profile) {
+            const ai = getAI();
+            const parts = [];
+            if (profile.photo && profile.photo.includes('base64,')) {
+                parts.push({ inlineData: { mimeType: 'image/jpeg', data: profile.photo.split(',')[1] } });
+            }
+            const prompt = `
+                Based on this User Profile:
+                [Me] ${JSON.stringify(profile)}
+                [Ideal Match] Age:${profile.partnerAgeRange}, Height:${profile.partnerHeight}, Values:${profile.partnerValues}, DealBreakers:${profile.dealBreakers}.
+                
+                Generate 5 insightful screening questions to ask potential matches.
+                Output in Traditional Chinese.
+            `;
+            parts.push({ text: prompt });
+
+            try {
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: { parts },
+                    config: { responseMimeType: 'application/json', responseSchema: { type: 'ARRAY', items: { type: 'STRING' } } }
+                });
+                return response.text ? JSON.parse(response.text) : ["請分享你最難忘的旅行？"];
+            } catch (e) { console.error(e); return ["發生錯誤，請重試。"]; }
+        }
+
+        async function getChatAdvice(history, lastMsg, profile) {
+            const ai = getAI();
+            const prompt = `Role: Dating Coach. User:${profile.name}, Values:${profile.values}. Partner said: "${lastMsg}". Chat History Length: ${history.length}. Give 3 reply options (Traditional Chinese).`;
+            const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+            return response.text;
+        }
+
+        async function checkFakeProfile(messages) {
+            const ai = getAI();
+            const transcript = messages.map(m => `${m.sender}: ${m.text}`).join('\n');
+            const prompt = `Analyze for bot/scam. Transcript: ${transcript}. JSON {isFake:boolean, reason:string(Traditional Chinese)}.`;
+            try {
+                const res = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash', contents: prompt,
+                    config: { responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { isFake: {type:'BOOLEAN'}, reason: {type:'STRING'} } } }
+                });
+                return res.text ? JSON.parse(res.text) : { isFake: false, reason: "N/A" };
+            } catch (e) { return { isFake: false, reason: "Error" }; }
+        }
+
+        async function extractChatFromMedia(base64, mimeType) {
+            const ai = getAI();
+            const prompt = `Extract chat bubbles. Identify 'user' (right/color) vs 'partner' (left/gray). JSON Array [{sender:'user'|'partner', text:'string'}].`;
+            try {
+                const res = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: { parts: [{ inlineData: { mimeType, data: base64 } }, { text: prompt }] },
+                    config: { responseMimeType: 'application/json', responseSchema: { type: 'ARRAY', items: { type: 'OBJECT', properties: { sender: {type:'STRING'}, text: {type:'STRING'} } } } }
+                });
+                return res.text ? JSON.parse(res.text) : [];
+            } catch (e) { console.error(e); return []; }
+        }
+
+        async function analyzeScamRisk(candidate) {
+            const ai = getAI();
+            const transcript = candidate.messages.map(m => `${m.sender}: ${m.text}`).join('\n');
+            const prompt = `Analyze scam risk for ${candidate.name}. Criteria: Money, Urgency, Inconsistencies. JSON {riskScore:int(0-100), riskLevel:string, flags:string[], analysis:string(Traditional Chinese)}.`;
+            try {
+                const res = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash', contents: prompt,
+                    config: { responseMimeType: 'application/json', responseSchema: { type: 'OBJECT', properties: { riskScore: {type:'INTEGER'}, riskLevel: {type:'STRING'}, flags: {type:'ARRAY', items: {type:'STRING'}}, analysis: {type:'STRING'} } } }
+                });
+                return res.text ? JSON.parse(res.text) : null;
+            } catch (e) { return null; }
+        }
+
+        async function analyzeAndRank(profile, candidates) {
+            const ai = getAI();
+            const data = candidates.map(c => ({ id: c.id, name: c.name, chat: c.messages.map(m => m.text).join('\n') }));
+            const prompt = `Matchmaker Task. User MBTI:${profile.mbti}. Candidates:${JSON.stringify(data)}. 1.Infer MBTI. 2.Compatibility (Values, Comm, Emotional, Lifestyle, Goals). JSON Array of detailed objects.`;
+            try {
+                const res = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash', contents: prompt,
+                    config: { responseMimeType: 'application/json', responseSchema: { type: 'ARRAY', items: { type: 'OBJECT', properties: { id: {type:'STRING'}, mbtiAnalysis: {type:'OBJECT', properties:{estimatedType:{type:'STRING'}}}, compatibilityScore: {type:'INTEGER'}, compatibilityReason: {type:'STRING'}, compatibilityDimensions: {type:'ARRAY', items:{type:'OBJECT', properties:{label:{type:'STRING'}, score:{type:'INTEGER'}, comment:{type:'STRING'}}}} } } } }
+                });
+                return res.text ? JSON.parse(res.text) : [];
+            } catch (e) { return []; }
+        }
+
+        async function generateLifeStory(profile, candidate) {
+            const ai = getAI();
+            const prompt = `Write a cinematic 60s script. User:${profile.name}, Candidate:${candidate.name}. Story: Meet -> Friction -> Crisis -> Resolution (No Divorce). Traditional Chinese.`;
+            const res = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+            return res.text || "Failed";
+        }
+
+        async function generateVeoVideo(story, customPrompt) {
+            const ai = getAI();
+            const prompt = customPrompt || `Cinematic video scene: ${story.substring(0, 150)}`;
+            let op = await ai.models.generateVideos({
+                model: 'veo-3.1-fast-generate-preview', prompt,
+                config: { numberOfVideos: 1, resolution: '1080p', aspectRatio: '16:9' }
+            });
+            while (!op.done) {
+                await new Promise(r => setTimeout(r, 5000));
+                op = await ai.operations.getVideosOperation({operation: op});
+            }
+            return op.response?.generatedVideos?.[0]?.video?.uri ? `${op.response.generatedVideos[0].video.uri}&key=${API_KEY}` : null;
+        }
+
+        // ==========================================
+        // 3. UI RENDERING
+        // ==========================================
+
+        function render() {
+            renderHeader();
+            const main = document.getElementById('main-content');
+            main.innerHTML = '';
+            
+            if (state.currentStep === 1) renderStep1(main);
+            else if (state.currentStep === 2) renderStep2(main);
+            else if (state.currentStep === 3) renderStep3(main);
+            else if (state.currentStep === 4) renderStep4(main);
+            else if (state.currentStep === 5) renderStep5(main);
+            else if (state.currentStep === 6) renderStep6(main);
+
+            lucide.createIcons();
+        }
+
+        function renderHeader() {
+            const el = document.getElementById('step-indicators');
+            let html = '';
+            for(let i=1; i<=6; i++) {
+                let cls = "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-all ";
+                if(state.currentStep === i) cls += "bg-pink-600 text-white shadow-[0_0_15px_rgba(236,72,153,0.5)] scale-110";
+                else if(state.currentStep > i) cls += "bg-green-600 text-white";
+                else cls += "bg-slate-800 text-slate-500";
+                html += `<div class="${cls}">${i}</div>`;
+            }
+            el.innerHTML = html;
+        }
+
+        // --- STEP 1: SPLIT PROFILE ---
+        function renderStep1(container) {
+            container.innerHTML = `
+                <div class="text-center mb-8">
+                    <h2 class="text-3xl font-bold text-white mb-2">建立您的戀愛檔案</h2>
+                    <p class="text-slate-400 text-sm">左側是您的資料，右側是您尋找的對象條件。</p>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Left: About Me -->
+                    <div class="bg-slate-900 rounded-2xl border border-slate-800 p-6 shadow-xl relative overflow-hidden group hover:border-pink-500/50 transition-colors">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-pink-500 to-purple-600"></div>
+                        <div class="flex items-center gap-2 mb-6 text-pink-400"><i data-lucide="user"></i><h3 class="text-xl font-bold">關於我 (My Profile)</h3></div>
+                        
+                        <div class="space-y-4">
+                            <!-- Photo -->
+                            <div class="flex flex-col items-center mb-4">
+                                <div id="photo-upload-trigger" class="w-32 h-32 rounded-full border-2 border-dashed border-slate-600 flex items-center justify-center cursor-pointer overflow-hidden hover:border-pink-500 relative group/photo bg-slate-800">
+                                    ${state.userProfile.photo ? `<img src="${state.userProfile.photo}" class="w-full h-full object-cover">` : `<div class="text-slate-500 flex flex-col items-center"><i data-lucide="camera"></i><span class="text-xs mt-1">上傳照片</span></div>`}
+                                </div>
+                                <input type="file" id="photo-input" class="hidden" accept="image/*">
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3">
+                                ${createInput('姓名', 'name')}
+                                ${createInput('年齡', 'age', 'number')}
+                                ${createSelect('性別', 'gender', ['Male', 'Female', 'Other'])}
+                                ${createInput('身高(cm)', 'height', 'number')}
+                                ${createInput('居住地', 'location')}
+                                ${createInput('職業', 'job')}
+                                ${createSelect('年收入', 'income', CONSTANTS.INCOME)}
+                                ${createSelect('學歷', 'education', CONSTANTS.EDUCATION)}
+                                ${createSelect('MBTI', 'mbti', CONSTANTS.MBTI)}
+                                ${createSelect('宗教', 'religion', CONSTANTS.RELIGION)}
+                            </div>
+                            
+                            <div class="grid grid-cols-3 gap-2">
+                                ${createSelect('抽菸', 'smoking', CONSTANTS.SMOKING)}
+                                ${createSelect('飲酒', 'drinking', CONSTANTS.DRINKING)}
+                                ${createSelect('生子', 'wantKids', CONSTANTS.KIDS)}
+                            </div>
+
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">自我介紹 / 興趣</label>
+                                <textarea id="input-selfIntro" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-pink-500 outline-none" rows="3">${state.userProfile.selfIntro}</textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Ideal Match -->
+                    <div class="bg-slate-900 rounded-2xl border border-slate-800 p-6 shadow-xl relative overflow-hidden group hover:border-blue-500/50 transition-colors">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-blue-500 to-cyan-400"></div>
+                        <div class="flex items-center gap-2 mb-6 text-blue-400"><i data-lucide="search"></i><h3 class="text-xl font-bold">理想對象 (Ideal Match)</h3></div>
+
+                        <div class="space-y-4">
+                            <div class="bg-blue-900/10 p-3 rounded border border-blue-900/30 text-xs text-blue-300">參考 CMB/SOGA 邏輯，條件越細，AI 篩選越準。</div>
+                            
+                            <div class="grid grid-cols-2 gap-3">
+                                ${createInput('年齡範圍', 'partnerAgeRange', 'text', '25-35')}
+                                ${createInput('身高要求', 'partnerHeight', 'text', '170+')}
+                                ${createSelect('學歷要求', 'partnerEducation', ['不拘', ...CONSTANTS.EDUCATION])}
+                                ${createSelect('收入要求', 'partnerIncome', ['不拘', ...CONSTANTS.INCOME])}
+                            </div>
+
+                            <div class="border-t border-slate-800 pt-2">
+                                <label class="text-xs text-slate-500 font-bold block mb-2">Deal Breakers (絕對不可)</label>
+                                <div class="grid grid-cols-2 gap-3">
+                                    ${createSelect('對方抽菸', 'partnerSmoking', ['不拘', '完全不可', '可接受偶爾'])}
+                                    ${createSelect('對方生子', 'partnerWantKids', ['不拘', '要有計畫', '不想生'])}
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="text-xs text-slate-400 block mb-1">理想價值觀 / 特質</label>
+                                <textarea id="input-partnerValues" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-blue-500 outline-none" rows="3" placeholder="例如：上進心、喜歡動物...">${state.userProfile.partnerValues}</textarea>
+                            </div>
+                             <div>
+                                <label class="text-xs text-red-400 block mb-1">其他地雷區</label>
+                                <input id="input-dealBreakers" value="${state.userProfile.dealBreakers}" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-red-500 outline-none" placeholder="例如：媽寶、負債...">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 flex justify-center">
+                    <button id="step1-submit" class="w-full md:w-1/2 bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-4 rounded-xl shadow-lg hover:scale-105 transition-transform flex items-center justify-center gap-2">
+                        建立檔案並生成篩選問題
+                    </button>
+                </div>
+            `;
+
+            // Bind Events
+            document.getElementById('photo-upload-trigger').onclick = () => document.getElementById('photo-input').click();
+            document.getElementById('photo-input').onchange = (e) => {
+                const f = e.target.files[0];
+                if(f) {
+                    const r = new FileReader();
+                    r.onload = () => {
+                        state.userProfile.photo = r.result;
+                        renderStep1(container); // Re-render to show image
+                    };
+                    r.readAsDataURL(f);
+                }
+            };
+
+            // Capture Inputs on Change
+            const inputs = container.querySelectorAll('input, select, textarea');
+            inputs.forEach(el => {
+                el.addEventListener('change', (e) => {
+                    const key = e.target.id.replace('input-', '');
+                    if(key in state.userProfile) state.userProfile[key] = e.target.value;
+                });
+            });
+
+            document.getElementById('step1-submit').onclick = async () => {
+                const btn = document.getElementById('step1-submit');
+                // Sync all inputs one last time
+                inputs.forEach(el => {
+                    if(el.id.startsWith('input-')) state.userProfile[el.id.replace('input-', '')] = el.value;
+                });
+
+                if(!state.userProfile.name || !state.userProfile.mbti) return alert("請填寫姓名與 MBTI");
+
+                btn.innerText = "AI 分析中...";
+                btn.disabled = true;
+                const qs = await generateScreeningQuestions(state.userProfile);
+                alert(`AI 建議的篩選問題：\n\n${qs.join('\n')}`);
+                state.currentStep = 2;
+                render();
+            };
+        }
+
+        function createInput(label, key, type='text', placeholder='') {
+            return `<div>
+                <label class="text-xs text-slate-400 block mb-1">${label}</label>
+                <input id="input-${key}" type="${type}" value="${state.userProfile[key] || ''}" placeholder="${placeholder}" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-pink-500 outline-none">
+            </div>`;
+        }
+        function createSelect(label, key, options) {
+            return `<div>
+                <label class="text-xs text-slate-400 block mb-1">${label}</label>
+                <select id="input-${key}" class="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-pink-500 outline-none">
+                    <option value="">選擇...</option>
+                    ${options.map(o => `<option value="${o}" ${state.userProfile[key] === o ? 'selected' : ''}>${o}</option>`).join('')}
+                </select>
+            </div>`;
+        }
+
+        // --- STEP 2: CHAT & MEDIA IMPORT ---
+        function renderStep2(container) {
+            container.innerHTML = `
+                <div class="flex h-[800px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-700 relative">
+                    <!-- Sidebar -->
+                    <div class="w-1/3 bg-slate-800 border-r border-slate-700 flex flex-col">
+                        <div class="p-4 border-b border-slate-700"><button id="add-cand-btn" class="w-full bg-slate-700 hover:bg-slate-600 text-white p-2 rounded flex items-center justify-center gap-2"><i data-lucide="user-plus"></i> 新增對象</button></div>
+                        <div id="candidate-list" class="flex-1 overflow-y-auto"></div>
+                    </div>
+                    <!-- Chat Area -->
+                    <div class="flex-1 flex flex-col bg-slate-900 relative">
+                        <div id="chat-header" class="p-4 border-b border-slate-700 bg-slate-800 h-16 flex items-center justify-between"></div>
+                        <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4"></div>
+                        <div id="chat-input" class="p-4 bg-slate-800 border-t border-slate-700 flex gap-2"></div>
+                    </div>
+                </div>
+                <div class="fixed top-24 right-6">
+                    <button id="next-step-btn" class="bg-green-600 hover:bg-green-500 text-white px-6 py-2 rounded-full font-bold shadow-lg flex items-center gap-2 transition-all">下一步 <i data-lucide="shield-alert"></i></button>
+                </div>
+            `;
+
+            renderCandidateList();
+            renderChat();
+
+            document.getElementById('add-cand-btn').onclick = () => {
+                const name = prompt("候選人姓名：");
+                if(name) {
+                    const newCand = { id: Date.now().toString(), name, messages: [], category: 'normal' };
+                    state.candidates.push(newCand);
+                    state.activeCandidateId = newCand.id;
+                    renderCandidateList();
+                    renderChat();
+                }
+            };
+            document.getElementById('next-step-btn').onclick = () => {
+                if(state.candidates.length === 0) return alert("請至少新增一位對象");
+                state.currentStep = 3;
+                render();
+            };
+        }
+
+        function renderCandidateList() {
+            const list = document.getElementById('candidate-list');
+            if(!list) return;
+            list.innerHTML = state.candidates.length === 0 
+                ? `<div class="p-8 text-center text-slate-500">尚無名單</div>` 
+                : state.candidates.map(c => `
+                <div class="p-4 border-b border-slate-700 cursor-pointer hover:bg-slate-700 ${c.id === state.activeCandidateId ? 'bg-slate-700 border-l-4 border-l-pink-500' : ''}" onclick="window.setActive('${c.id}')">
+                    <h3 class="font-bold text-white">${c.name}</h3>
+                    <p class="text-xs text-slate-400">${c.messages.length} 則訊息</p>
+                </div>
+            `).join('');
+            lucide.createIcons();
+        }
+
+        window.setActive = (id) => {
+            state.activeCandidateId = id;
+            renderCandidateList();
+            renderChat();
+        };
+
+        function renderChat() {
+            const active = state.candidates.find(c => c.id === state.activeCandidateId);
+            const header = document.getElementById('chat-header');
+            const msgs = document.getElementById('chat-messages');
+            const inputArea = document.getElementById('chat-input');
+
+            if(!active) {
+                header.innerHTML = '';
+                msgs.innerHTML = `<div class="h-full flex flex-col items-center justify-center text-slate-500"><i data-lucide="message-square" class="w-12 h-12 mb-2 opacity-20"></i>請選擇對象</div>`;
+                inputArea.innerHTML = '';
+                return;
+            }
+
+            header.innerHTML = `
+                <h2 class="text-xl font-bold text-white">${active.name}</h2>
+                <div class="flex gap-2">
+                    <button id="import-media-btn" class="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded text-sm flex gap-1 items-center"><i data-lucide="upload"></i> 匯入截圖/影片</button>
+                    <button id="fake-check-btn" class="bg-red-900/50 text-red-300 border border-red-800 px-3 py-1 rounded text-sm flex gap-1 items-center"><i data-lucide="shield-alert"></i> 檢查假帳號</button>
+                </div>
+            `;
+
+            msgs.innerHTML = active.messages.length === 0 
+                ? `<div class="h-full flex flex-col items-center justify-center text-slate-500"><p>無對話紀錄，請匯入或輸入。</p></div>`
+                : active.messages.map(m => `
+                <div class="flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}">
+                    <div class="max-w-[70%] rounded-2xl p-3 px-4 ${m.sender === 'user' ? 'bg-gradient-to-r from-pink-600 to-purple-600 text-white rounded-tr-none' : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none'}">
+                        <p class="text-sm whitespace-pre-wrap">${m.text}</p>
+                    </div>
+                </div>
+            `).join('');
+            msgs.scrollTop = msgs.scrollHeight;
+
+            inputArea.innerHTML = `
+                <input id="msg-input" class="flex-1 bg-slate-900 border border-slate-600 rounded-full px-4 py-3 text-white outline-none" placeholder="輸入訊息...">
+                <button id="send-msg-btn" class="p-3 bg-pink-600 rounded-full text-white"><i data-lucide="send"></i></button>
+                <button id="ai-advice-btn" class="p-3 bg-slate-700 rounded-full text-yellow-400"><i data-lucide="zap"></i></button>
+            `;
+
+            // Bind Chat Events
+            const send = () => {
+                const val = document.getElementById('msg-input').value.trim();
+                if(val) {
+                    active.messages.push({sender: 'user', text: val});
+                    renderChat();
+                }
+            };
+            document.getElementById('send-msg-btn').onclick = send;
+            document.getElementById('msg-input').onkeydown = (e) => e.key === 'Enter' && send();
+
+            document.getElementById('import-media-btn').onclick = openImportModal;
+            
+            document.getElementById('ai-advice-btn').onclick = async () => {
+                const last = active.messages.filter(m => m.sender === 'partner').pop()?.text || "";
+                const advice = await getChatAdvice(active.messages, last, state.userProfile);
+                alert("AI 建議回覆：\n" + advice);
+            };
+
+            document.getElementById('fake-check-btn').onclick = async () => {
+                const res = await checkFakeProfile(active.messages);
+                alert(`檢測結果：${res.isFake ? '有風險' : '正常'}\n理由：${res.reason}`);
+            };
+
+            lucide.createIcons();
+        }
+
+        // --- IMPORT MODAL ---
+        function openImportModal() {
+            const overlay = document.getElementById('modal-overlay');
+            const content = document.getElementById('modal-content');
+            overlay.classList.remove('hidden');
+            
+            state.importData = { file: null, preview: null, messages: [] };
+
+            const renderModalUI = () => {
+                content.innerHTML = `
+                    <div class="p-4 border-b border-slate-700 bg-slate-800 flex justify-between">
+                        <h3 class="font-bold text-white">匯入對話紀錄 (截圖/影片)</h3>
+                        <button onclick="document.getElementById('modal-overlay').classList.add('hidden')" class="text-slate-400"><i data-lucide="x"></i></button>
+                    </div>
+                    <div class="flex-1 flex flex-col md:flex-row h-full overflow-hidden">
+                        <!-- Left: Upload -->
+                        <div class="w-full md:w-1/3 bg-slate-800 p-6 border-r border-slate-700 overflow-y-auto flex flex-col items-center">
+                            ${!state.importData.preview ? `
+                                <div id="drop-zone" class="w-full h-48 border-2 border-dashed border-slate-600 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-pink-500">
+                                    <i data-lucide="upload" class="mb-2 text-slate-400"></i>
+                                    <span class="text-slate-300">點擊上傳</span>
+                                </div>
+                                <input type="file" id="file-import" class="hidden" accept="image/*,video/*">
+                            ` : `
+                                <div class="w-full h-48 bg-black rounded flex items-center justify-center mb-4">
+                                    ${state.importData.file.type.startsWith('video') 
+                                        ? `<video src="${state.importData.preview}" controls class="max-h-full max-w-full"></video>` 
+                                        : `<img src="${state.importData.preview}" class="max-h-full max-w-full object-contain">`}
+                                </div>
+                                <button id="start-analyze-btn" class="w-full bg-pink-600 text-white py-2 rounded flex justify-center gap-2 items-center"><i data-lucide="scan"></i> AI 辨識</button>
+                                <button id="reset-import" class="mt-2 text-xs text-slate-400 underline">重新選擇</button>
+                            `}
+                        </div>
+                        <!-- Right: Editor -->
+                        <div class="flex-1 bg-slate-900 p-4 flex flex-col">
+                            <div class="flex justify-between mb-2">
+                                <h4 class="text-white">辨識結果 (${state.importData.messages.length})</h4>
+                                <button id="add-manual-msg" class="text-xs bg-slate-700 px-2 py-1 rounded text-white">+ 新增</button>
+                            </div>
+                            <div id="msg-editor-list" class="flex-1 overflow-y-auto space-y-2 bg-slate-800 p-2 rounded mb-4">
+                                ${state.importData.messages.length === 0 ? '<p class="text-slate-500 text-center mt-10">請上傳並辨識</p>' : 
+                                    state.importData.messages.map((m, i) => `
+                                        <div class="flex gap-2 group">
+                                            <button onclick="window.toggleSender(${i})" class="w-12 text-xs font-bold border rounded ${m.sender === 'user' ? 'border-pink-500 text-pink-500' : 'border-slate-500 text-slate-400'}">${m.sender === 'user' ? '我' : '對方'}</button>
+                                            <input onchange="window.updateMsgText(${i}, this.value)" value="${m.text}" class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 text-white text-sm">
+                                            <button onclick="window.deleteMsg(${i})" class="text-slate-600 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                        </div>
+                                    `).join('')}
+                            </div>
+                            <button id="confirm-import" class="w-full bg-green-600 text-white py-3 rounded font-bold disabled:opacity-50" ${state.importData.messages.length === 0 ? 'disabled' : ''}>確認匯入</button>
+                        </div>
+                    </div>
+                `;
+                lucide.createIcons();
+
+                // Bindings
+                const drop = document.getElementById('drop-zone');
+                if(drop) drop.onclick = () => document.getElementById('file-import').click();
+                
+                const input = document.getElementById('file-import');
+                if(input) input.onchange = (e) => {
+                    const f = e.target.files[0];
+                    if(f) {
+                        state.importData.file = f;
+                        state.importData.preview = URL.createObjectURL(f);
+                        renderModalUI();
+                    }
+                };
+
+                const analyzeBtn = document.getElementById('start-analyze-btn');
+                if(analyzeBtn) analyzeBtn.onclick = async () => {
+                    analyzeBtn.innerHTML = "分析中...";
+                    analyzeBtn.disabled = true;
+                    const r = new FileReader();
+                    r.readAsDataURL(state.importData.file);
+                    r.onload = async () => {
+                        const b64 = r.result.split(',')[1];
+                        const res = await extractChatFromMedia(b64, state.importData.file.type);
+                        state.importData.messages = res;
+                        renderModalUI();
+                    };
+                };
+                
+                const resetBtn = document.getElementById('reset-import');
+                if(resetBtn) resetBtn.onclick = () => {
+                    state.importData = { file: null, preview: null, messages: [] };
+                    renderModalUI();
+                };
+
+                const addBtn = document.getElementById('add-manual-msg');
+                if(addBtn) addBtn.onclick = () => {
+                    state.importData.messages.push({sender: 'partner', text: ''});
+                    renderModalUI();
+                };
+
+                const confirmBtn = document.getElementById('confirm-import');
+                if(confirmBtn) confirmBtn.onclick = () => {
+                    const active = state.candidates.find(c => c.id === state.activeCandidateId);
+                    active.messages.push(...state.importData.messages);
+                    overlay.classList.add('hidden');
+                    renderChat();
+                };
+            };
+
+            window.toggleSender = (i) => {
+                const m = state.importData.messages[i];
+                m.sender = m.sender === 'user' ? 'partner' : 'user';
+                renderModalUI();
+            };
+            window.updateMsgText = (i, val) => {
+                state.importData.messages[i].text = val;
+            };
+            window.deleteMsg = (i) => {
+                state.importData.messages.splice(i, 1);
+                renderModalUI();
+            };
+
+            renderModalUI();
+        }
+
+        // --- STEP 3: SCAM CHECK ---
+        async function renderStep3(container) {
+            container.innerHTML = `
+                <div class="h-96 flex flex-col items-center justify-center">
+                    <i data-lucide="loader-2" class="w-16 h-16 text-pink-500 animate-spin-custom mb-4"></i>
+                    <h2 class="text-2xl font-bold text-white">正在進行詐騙風險掃描...</h2>
+                </div>
+            `;
+            lucide.createIcons();
+
+            const analyzed = await Promise.all(state.candidates.map(async c => {
+                const r = await analyzeScamRisk(c);
+                return { ...c, scamReport: r };
+            }));
+            state.candidates = analyzed;
+
+            container.innerHTML = `
+                <h2 class="text-3xl font-bold text-white mb-8 text-center">詐騙偵測報告</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    ${state.candidates.map(c => {
+                        const r = c.scamReport;
+                        const color = (!r || r.riskScore < 50) ? 'green' : 'red';
+                        return `
+                        <div class="bg-slate-800 rounded-xl border border-${color}-500/50 p-6">
+                            <h3 class="text-xl font-bold text-white flex justify-between">${c.name} <span class="text-${color}-400">${r?.riskLevel || 'N/A'} (${r?.riskScore || 0}%)</span></h3>
+                            <div class="w-full bg-slate-700 h-2 rounded-full mb-4"><div class="bg-${color}-500 h-2 rounded-full" style="width:${r?.riskScore}%"></div></div>
+                            <p class="text-sm text-slate-300">${r?.analysis || '無資料'}</p>
+                            <div class="flex flex-wrap gap-2 mt-2">${(r?.flags || []).map(f => `<span class="bg-red-900/50 text-red-200 text-xs px-2 py-1 rounded">${f}</span>`).join('')}</div>
+                        </div>`;
+                    }).join('')}
+                </div>
+                <div class="flex justify-center mt-8">
+                    <button onclick="state.currentStep=4; window.render()" class="bg-blue-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">進入適配度分析</button>
+                </div>
+            `;
+            window.render = render;
+            lucide.createIcons();
+        }
+
+        // --- STEP 4: COMPATIBILITY ---
+        async function renderStep4(container) {
+            container.innerHTML = `<div class="h-96 flex flex-col items-center justify-center"><i data-lucide="loader-2" class="w-16 h-16 text-purple-500 animate-spin-custom mb-4"></i><h2 class="text-2xl text-white">分析 MBTI 與價值觀...</h2></div>`;
+            lucide.createIcons();
+            
+            const results = await analyzeAndRank(state.userProfile, state.candidates);
+            state.candidates = state.candidates.map(c => {
+                const res = results.find(r => r.id === c.id);
+                return res ? { ...c, ...res } : c;
+            }).sort((a,b) => (b.compatibilityScore || 0) - (a.compatibilityScore || 0));
+
+            container.innerHTML = `
+                <h2 class="text-3xl font-bold text-white mb-8 text-center">前三名靈魂伴侶</h2>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                    ${state.candidates.slice(0, 3).map((c, i) => `
+                        <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 relative overflow-hidden group hover:border-pink-500">
+                            <div class="absolute top-0 right-0 bg-pink-600 text-white px-3 py-1 text-xs font-bold">#${i+1}</div>
+                            <div class="text-center mb-4">
+                                <div class="w-20 h-20 bg-slate-700 rounded-full mx-auto flex items-center justify-center text-3xl font-bold mb-2">${c.name[0]}</div>
+                                <h3 class="text-xl font-bold">${c.name}</h3>
+                                <p class="text-green-400 font-bold text-2xl">${c.compatibilityScore}%</p>
+                                <p class="text-xs text-purple-400">MBTI: ${c.mbtiAnalysis?.estimatedType || 'Unknown'}</p>
+                            </div>
+                            <div class="space-y-2">
+                                ${(c.compatibilityDimensions || []).map(d => `
+                                    <div class="text-xs">
+                                        <div class="flex justify-between text-slate-400"><span>${d.label}</span><span>${d.score}%</span></div>
+                                        <div class="w-full bg-slate-700 h-1 rounded-full"><div class="bg-blue-500 h-1 rounded-full" style="width:${d.score}%"></div></div>
+                                        <p class="text-[10px] text-slate-500">${d.comment}</p>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="flex justify-center"><button onclick="state.currentStep=5; window.render()" class="bg-gradient-to-r from-pink-600 to-purple-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">生成劇本</button></div>
+            `;
+            lucide.createIcons();
+        }
+
+        // --- STEP 5: SCENARIOS ---
+        async function renderStep5(container) {
+            container.innerHTML = `<div class="h-96 flex flex-col items-center justify-center"><i data-lucide="loader-2" class="w-16 h-16 text-yellow-500 animate-spin-custom mb-4"></i><h2 class="text-2xl text-white">撰寫 60秒 人生微電影...</h2></div>`;
+            lucide.createIcons();
+
+            state.scenarios = [];
+            for (const c of state.candidates.slice(0, 3)) {
+                const story = await generateLifeStory(state.userProfile, c);
+                state.scenarios.push({ candidateId: c.id, name: c.name, story });
+            }
+
+            container.innerHTML = `
+                <div class="text-center mb-8"><h2 class="text-3xl font-bold text-white">未來劇本 (絕不離婚版)</h2></div>
+                <div class="space-y-8">
+                    ${state.scenarios.map((s, i) => `
+                        <div class="bg-slate-800 rounded-xl p-8 border border-slate-700">
+                            <h3 class="text-2xl font-bold text-white mb-4">劇本 #${i+1}: ${s.name}</h3>
+                            <div class="bg-slate-900 p-6 rounded border border-slate-700 text-slate-300 font-mono whitespace-pre-wrap text-sm">${s.story}</div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="flex justify-center mt-8"><button onclick="state.currentStep=6; window.render()" class="bg-pink-600 text-white px-8 py-3 rounded-full font-bold shadow-lg">前往影片生成</button></div>
+            `;
+            lucide.createIcons();
+        }
+
+        // --- STEP 6: VIDEO ---
+        function renderStep6(container) {
+            container.innerHTML = `
+                <div class="text-center mb-10"><h2 class="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-pink-400 to-purple-400 mb-4">最終願景 (Veo Video)</h2><p class="text-slate-400 text-sm">需付費 API Key</p></div>
+                <div class="grid gap-8">
+                    ${state.scenarios.map(s => `
+                        <div class="bg-slate-900 rounded-2xl p-6 border border-slate-700 flex flex-col md:flex-row gap-6 shadow-2xl">
+                            <div class="md:w-1/2">
+                                <h3 class="text-2xl font-bold text-white mb-2">${s.name}</h3>
+                                <div class="h-32 overflow-y-auto text-xs text-slate-400 bg-slate-800 p-2 rounded mb-4">${s.story}</div>
+                                <textarea id="prompt-${s.candidateId}" class="w-full bg-slate-950 border border-slate-700 rounded p-2 text-xs text-slate-200 font-mono" rows="2">Cinematic video: ${s.story.substring(0, 100)}...</textarea>
+                                <button onclick="window.genVideo('${s.candidateId}')" class="mt-2 w-full bg-pink-600 text-white font-bold py-2 rounded flex justify-center gap-2"><i data-lucide="play"></i> 生成影片</button>
+                                <p id="status-${s.candidateId}" class="text-center text-xs text-slate-500 mt-2"></p>
+                            </div>
+                            <div class="md:w-1/2 bg-black rounded-xl flex items-center justify-center min-h-[300px] border border-slate-800">
+                                <video id="video-${s.candidateId}" controls class="w-full h-full object-contain hidden"></video>
+                                <div id="ph-${s.candidateId}" class="text-slate-600 flex flex-col items-center"><i data-lucide="play" class="w-12 h-12 mb-2"></i><p>預覽區域</p></div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            lucide.createIcons();
+
+            window.genVideo = async (id) => {
+                const s = state.scenarios.find(x => x.candidateId === id);
+                const p = document.getElementById(`prompt-${id}`).value;
+                const st = document.getElementById(`status-${id}`);
+                const vid = document.getElementById(`video-${id}`);
+                const ph = document.getElementById(`ph-${id}`);
+                
+                st.innerText = "生成中 (需時幾分鐘)...";
+                st.className = "text-center text-xs text-yellow-500 mt-2 animate-pulse";
+                try {
+                    const uri = await generateVeoVideo(s.story, p);
+                    if(uri) {
+                        vid.src = uri;
+                        vid.classList.remove('hidden');
+                        ph.classList.add('hidden');
+                        st.innerText = "完成";
+                        st.className = "text-center text-xs text-green-500 mt-2";
+                    } else throw new Error("No URI");
+                } catch(e) {
+                    console.error(e);
+                    st.innerText = "生成失敗 (檢查 Quota)";
+                    st.className = "text-center text-xs text-red-500 mt-2";
+                }
+            };
+        }
+
+        // Initial Render
+        render();
+
+    </script>
+</body>
+</html>
