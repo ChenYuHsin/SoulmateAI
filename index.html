@@ -23,7 +23,6 @@
       body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
       .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
       @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-      /* 錯誤視窗 */
       #error-box { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 9999; padding: 40px; }
       .error-content { background: #330000; border: 1px solid red; color: #ffcccc; padding: 20px; max-width: 600px; margin: 100px auto; border-radius: 8px; font-family: monospace; white-space: pre-wrap; }
     </style>
@@ -52,9 +51,6 @@
             Upload, X, Check, ArrowRight, Plus, Clapperboard, Play, HeartHandshake 
         } from "lucide-react";
 
-        // ==========================================
-        // 🔐 API KEY 安全管理系統 (GitHub 公開版專用)
-        // ==========================================
         const getApiKey = () => {
             let key = localStorage.getItem('gemini_api_key');
             if (!key) {
@@ -79,11 +75,11 @@
             { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
             { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
           ];
-          return genAI.getGenerativeModel({ model: modelName, generationConfig: jsonMode ? { responseMimeType: "application/json" } : {}, safetySettings });
+          // 移除 jsonMode 的 responseMimeType 強制設定，避免部分舊版 API 不支援
+          // 改由 Prompt 引導輸出 JSON
+          return genAI.getGenerativeModel({ model: modelName, safetySettings });
         };
 
-        // ★★★ 關鍵修復：圖片自動壓縮引擎 ★★★
-        // 這能解決 "Works in Studio, fails in App" 的問題
         const compressImage = async (file) => {
             return new Promise((resolve) => {
                 const reader = new FileReader();
@@ -93,17 +89,13 @@
                     img.src = event.target.result;
                     img.onload = () => {
                         const canvas = document.createElement('canvas');
-                        // 限制最大寬度為 1024px，保持比例 (足夠辨識文字，但體積小很多)
-                        const MAX_WIDTH = 1024;
+                        const MAX_WIDTH = 800; // 再縮小一點確保通過
                         const scaleSize = MAX_WIDTH / img.width;
                         canvas.width = MAX_WIDTH;
                         canvas.height = img.height * scaleSize;
-                        
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        
-                        // 轉為 JPEG 格式，品質 0.7 (大幅縮減體積)
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
                         resolve({
                             inlineData: { data: dataUrl.split(',')[1], mimeType: 'image/jpeg' }
                         });
@@ -115,9 +107,8 @@
         // 1. 媒體辨識 (Step 2 修復版)
         const extractChatFromMedia = async (file) => {
             try {
-                const model = getModel("gemini-1.5-flash", true);
+                const model = getModel("gemini-1.5-flash", false); // 關閉 JSON mode 避免 404
                 
-                // 如果是圖片，使用壓縮引擎；如果是影片，直接讀取 (影片無法在前端壓縮，仍需限制大小)
                 let mediaPart;
                 if (file.type.startsWith('image/')) {
                     mediaPart = await compressImage(file);
@@ -130,16 +121,16 @@
                     });
                 }
 
-                const prompt = `Analyze this chat image/video. Transcribe conversation to JSON Array: [{"sender": "user"|"partner", "text": "content"}]. Rules: 'user' is usually right/green/blue side.`;
+                const prompt = `Analyze this chat image/video. Transcribe conversation to a valid JSON Array string. Format: [{"sender": "user"|"partner", "text": "content"}]. Rules: 'user' is usually right/green/blue side. Output ONLY the JSON string.`;
                 const result = await model.generateContent([prompt, mediaPart]);
                 const text = result.response.text().replace(/```json|```/g, '').trim();
                 return JSON.parse(text);
             } catch (e) {
                 console.error(e);
                 let msg = "辨識失敗。";
-                if(e.message.includes("413")) msg = "檔案太大了 (Payload Limit)。請使用截圖，或裁切影片長度。";
-                else if(e.message.includes("400")) msg = "API Key 可能權限不足或過期。";
-                else if(e.toString().includes("Safety")) msg = "內容被安全過濾器阻擋 (Safety Filter)。";
+                if(e.message.includes("413")) msg = "檔案太大了。";
+                else if(e.message.includes("404")) msg = "找不到模型 (404)。請稍後再試。";
+                else if(e.message.includes("400")) msg = "API Key 可能權限不足。";
                 alert(msg + "\n詳細錯誤：" + e.message);
                 return [];
             }
@@ -147,256 +138,28 @@
 
         // 2. 生成問題
         const generateScreeningQuestions = async (profile) => {
-          const model = getModel("gemini-1.5-flash", true);
-          const prompt = `User: ${JSON.stringify(profile)}. Generate 5 screening questions (Traditional Chinese). Return JSON Array of strings.`;
-          try { const r = await model.generateContent(prompt); return JSON.parse(r.response.text()); } catch (e) { return ["請分享你最長的一段感情？", "你週末通常怎麼過？"]; }
+          const model = getModel("gemini-1.5-flash", false);
+          const prompt = `User: ${JSON.stringify(profile)}. Generate 5 screening questions (Traditional Chinese). Return a valid JSON Array of strings. Output ONLY the JSON string.`;
+          try { const r = await model.generateContent(prompt); return JSON.parse(r.response.text().replace(/```json|```/g, '').trim()); } catch (e) { return ["請分享你最長的一段感情？", "你週末通常怎麼過？"]; }
         };
 
         // 3. 詐騙分析
         const analyzeScamRisk = async (candidates) => {
-          const model = getModel("gemini-1.5-flash", true);
+          const model = getModel("gemini-1.5-flash", false);
           const analyzed = await Promise.all(candidates.map(async (c) => {
             if (c.messages.length === 0) return c;
-            const prompt = `Analyze scam risk. Name: ${c.name}. Chat: ${c.messages.map(m=>m.text).join('\n')}. Return JSON: { "riskScore": number(0-100), "riskLevel": "Low"|"Medium"|"High", "analysis": "Chinese string" }.`;
-            try { const r = await model.generateContent(prompt); return { ...c, scamReport: JSON.parse(r.response.text()) }; } catch(e) { return c; }
+            const prompt = `Analyze scam risk. Name: ${c.name}. Chat: ${c.messages.map(m=>m.text).join('\n')}. Return JSON: { "riskScore": number(0-100), "riskLevel": "Low"|"Medium"|"High", "analysis": "Chinese string" }. Output ONLY JSON.`;
+            try { const r = await model.generateContent(prompt); return { ...c, scamReport: JSON.parse(r.response.text().replace(/```json|```/g, '').trim()) }; } catch(e) { return c; }
           }));
           return analyzed;
         };
 
         // 4. 排名
         const analyzeAndRankCandidates = async (profile, candidates) => {
-          const model = getModel("gemini-1.5-flash", true);
+          const model = getModel("gemini-1.5-flash", false);
           const data = candidates.map(c => ({ id: c.id, name: c.name, chat: c.messages.map(m=>m.text).join('\n') }));
-          const prompt = `Matchmaker. User: ${JSON.stringify(profile)}. Candidates: ${JSON.stringify(data)}. Rank top 3. Return JSON Array: [{ "id": "...", "compatibilityScore": number, "compatibilityReason": "string" }]`;
+          const prompt = `Matchmaker. User: ${JSON.stringify(profile)}. Candidates: ${JSON.stringify(data)}. Rank top 3. Return JSON Array: [{ "id": "...", "compatibilityScore": number, "compatibilityReason": "string" }]. Output ONLY JSON.`;
           try { 
               const r = await model.generateContent(prompt);
-              const results = JSON.parse(r.response.text());
-              return candidates.map(c => { const res = results.find(a => a.id === c.id); return res ? { ...c, ...res } : c; }).sort((a,b)=>(b.compatibilityScore||0)-(a.compatibilityScore||0)).slice(0,3);
-          } catch(e) { return candidates.slice(0,3); }
-        };
-
-        // 5. 劇本
-        const generateLifeStory = async (profile, candidate) => {
-           const model = getModel("gemini-1.5-flash", false);
-           const prompt = `Write a cinematic 60s script. User (MBTI ${profile.mbti}) & ${candidate.name}. Structure: Intro -> Conflict -> Resolution. Language: Traditional Chinese.`;
-           const r = await model.generateContent(prompt);
-           return r.response.text();
-        };
-
-        // --- 元件 ---
-
-        const Step1Profile = ({ onComplete }) => {
-          const [profile, setProfile] = useState({
-            name: '', age: 25, gender: 'Male', height: 170, location: '',
-            education: '', job: '', income: '', mbti: '',
-            smoking: '', drinking: '', religion: '', wantKids: '',
-            interests: '', lookingFor: '', values: ''
-          });
-          const [loading, setLoading] = useState(false);
-          const handleChange = (f, v) => setProfile(prev => ({ ...prev, [f]: v }));
-          
-          const EDUCATION = ["高中職及以下", "專科", "大學", "碩士", "博士"];
-          const INCOME = ["50萬以下", "50-80萬", "80-120萬", "120-200萬", "200-300萬", "300萬以上", "不透漏"];
-          const MBTI = ['INTJ', 'INTP', 'ENTJ', 'ENTP', 'INFJ', 'INFP', 'ENFJ', 'ENFP', 'ISTJ', 'ISFJ', 'ESTJ', 'ESFJ', 'ISTP', 'ISFP', 'ESTP', 'ESFP'];
-          const RELIGIONS = ["無信仰", "佛教", "基督教", "天主教", "道教", "伊斯蘭教", "其他"];
-
-          return (
-            <div className="max-w-4xl mx-auto p-6 bg-slate-900 rounded-xl border border-slate-700 animate-fade-in">
-              <div className="flex items-center gap-3 mb-8 border-b border-slate-700 pb-4">
-                <div className="p-3 bg-pink-600 rounded-lg shadow-lg"><User className="text-white w-6 h-6" /></div>
-                <div><h2 className="text-2xl font-bold text-white">建立您的深度檔案</h2><p className="text-slate-400 text-sm">詳細資料能幫助 AI 精準分析</p></div>
-              </div>
-              <div className="space-y-8">
-                <section><h3 className="text-pink-400 font-bold mb-4 text-sm flex gap-2"><User size={16}/> 基本資料</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div><label className="block text-slate-400 text-xs mb-1">姓名</label><input className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.name} onChange={(e)=>handleChange('name', e.target.value)} /></div>
-                    <div><label className="block text-slate-400 text-xs mb-1">年齡</label><input type="number" className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.age} onChange={(e)=>handleChange('age', parseInt(e.target.value))} /></div>
-                    <div><label className="block text-slate-400 text-xs mb-1">性別</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.gender} onChange={(e)=>handleChange('gender', e.target.value)}><option value="Male">男性</option><option value="Female">女性</option></select></div>
-                    <div><label className="block text-slate-400 text-xs mb-1">身高 (cm)</label><input type="number" className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.height} onChange={(e)=>handleChange('height', parseInt(e.target.value))} /></div>
-                    <div className="md:col-span-2"><label className="block text-slate-400 text-xs mb-1">居住地</label><input className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.location} onChange={(e)=>handleChange('location', e.target.value)} /></div>
-                  </div>
-                </section>
-                <section><h3 className="text-purple-400 font-bold mb-4 text-sm flex gap-2"><Briefcase size={16}/> 社經背景</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                     <div><label className="block text-slate-400 text-xs mb-1">學歷</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.education} onChange={(e)=>handleChange('education', e.target.value)}><option value="">請選擇</option>{EDUCATION.map(l=><option key={l} value={l}>{l}</option>)}</select></div>
-                     <div><label className="block text-slate-400 text-xs mb-1">職業</label><input className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.job} onChange={(e)=>handleChange('job', e.target.value)} /></div>
-                     <div><label className="block text-slate-400 text-xs mb-1">年收入</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.income} onChange={(e)=>handleChange('income', e.target.value)}><option value="">請選擇</option>{INCOME.map(l=><option key={l} value={l}>{l}</option>)}</select></div>
-                     <div><label className="block text-slate-400 text-xs mb-1">MBTI</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.mbti} onChange={(e)=>handleChange('mbti', e.target.value)}><option value="">請選擇</option>{MBTI.map(l=><option key={l} value={l}>{l}</option>)}</select></div>
-                  </div>
-                </section>
-                <section><h3 className="text-green-400 font-bold mb-4 text-sm flex gap-2"><Compass size={16}/> 生活習慣</h3>
-                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div><label className="block text-slate-400 text-xs mb-1">抽菸</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.smoking} onChange={(e)=>handleChange('smoking', e.target.value)}><option value="">請選擇</option><option value="No">不抽</option><option value="Yes">抽</option></select></div>
-                      <div><label className="block text-slate-400 text-xs mb-1">飲酒</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.drinking} onChange={(e)=>handleChange('drinking', e.target.value)}><option value="">請選擇</option><option value="Social">社交</option><option value="No">不喝</option></select></div>
-                      <div><label className="block text-slate-400 text-xs mb-1">宗教</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.religion} onChange={(e)=>handleChange('religion', e.target.value)}><option value="">請選擇</option>{RELIGIONS.map(l=><option key={l} value={l}>{l}</option>)}</select></div>
-                      <div><label className="block text-slate-400 text-xs mb-1">生子</label><select className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" value={profile.wantKids} onChange={(e)=>handleChange('wantKids', e.target.value)}><option value="">請選擇</option><option value="Yes">想</option><option value="No">不想</option></select></div>
-                   </div>
-                </section>
-                <section><h3 className="text-yellow-400 font-bold mb-4 text-sm flex gap-2"><Sparkles size={16}/> 深度介紹</h3>
-                   <div className="space-y-4">
-                      <div><label className="block text-slate-400 text-xs mb-1">興趣與愛好</label><textarea className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" rows="2" value={profile.interests} onChange={(e)=>handleChange('interests', e.target.value)} /></div>
-                      <div><label className="block text-slate-400 text-xs mb-1">核心價值觀</label><textarea className="w-full bg-slate-800 border-slate-600 rounded p-2 text-white" rows="2" value={profile.values} onChange={(e)=>handleChange('values', e.target.value)} /></div>
-                   </div>
-                </section>
-                <button onClick={async()=>{
-                    try {
-                        setLoading(true); 
-                        const q = await generateScreeningQuestions(profile); 
-                        onComplete(profile, q);
-                    } catch(e) { 
-                        alert("AI 生成失敗，請確認 API Key。"); 
-                        setLoading(false);
-                    }
-                }} disabled={!profile.name || loading} className="w-full mt-6 bg-pink-600 hover:bg-pink-500 text-white font-bold py-3 rounded-lg flex justify-center items-center gap-2">{loading?<Loader2 className="animate-spin"/>:"建立檔案並生成篩選策略"}</button>
-              </div>
-            </div>
-          );
-        };
-
-        const Step2Chat = ({ candidates, setCandidates, onNext }) => {
-          const [activeId, setActiveId] = useState(null);
-          const [showImport, setShowImport] = useState(false);
-          const [newName, setNewName] = useState('');
-          const [file, setFile] = useState(null);
-          const [preview, setPreview] = useState(null);
-          const [analyzing, setAnalyzing] = useState(false);
-          
-          const activeC = candidates.find(c => c.id === activeId);
-          const addC = () => { if(newName){ const id=Date.now().toString(); setCandidates([...candidates,{id,name:newName,messages:[]}]); setActiveId(id); setNewName(''); }};
-          
-          const handleFileSelect = (e) => {
-              const f = e.target.files[0];
-              if(f) {
-                  setFile(f);
-                  setPreview(URL.createObjectURL(f));
-              }
-          };
-
-          const handleAnalyze = async () => {
-             if(!file || !activeId) return;
-             setAnalyzing(true);
-             const msgs = await extractChatFromMedia(file);
-             if(msgs.length) {
-                 const mapped = msgs.map((m,i)=>({id:Date.now()+i, sender: m.sender.includes('user')?'user':'partner', text:m.text}));
-                 setCandidates(prev=>prev.map(c=>c.id===activeId?{...c, messages:[...c.messages, ...mapped]}:c));
-                 setShowImport(false); setFile(null); setPreview(null);
-             }
-             setAnalyzing(false);
-          };
-
-          return (
-            <div className="flex h-[600px] bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
-               <div className="w-1/3 bg-slate-800 border-r border-slate-700 p-4">
-                  <h3 className="text-white font-bold mb-4">候選人列表</h3>
-                  <div className="flex gap-2 mb-4"><input className="flex-1 bg-slate-900 border-slate-600 rounded p-1 text-white" value={newName} onChange={e=>setNewName(e.target.value)} placeholder="名字"/><button onClick={addC} className="bg-green-600 text-white px-3 rounded"><Plus size={16}/></button></div>
-                  <div className="space-y-2">{candidates.map(c=><div key={c.id} onClick={()=>setActiveId(c.id)} className={`p-3 rounded cursor-pointer ${activeId===c.id?'bg-slate-700 border-l-4 border-pink-500':'bg-slate-800 hover:bg-slate-700'}`}><div className="text-white font-bold">{c.name}</div><div className="text-xs text-slate-400">{c.messages.length} 則訊息</div></div>)}</div>
-               </div>
-               <div className="flex-1 flex flex-col relative bg-slate-900">
-                  {activeC ? (
-                      <>
-                        <div className="p-4 border-b border-slate-700 flex justify-between"><h3 className="text-white font-bold">{activeC.name}</h3><button onClick={onNext} className="bg-blue-600 px-4 py-1 rounded text-white text-sm font-bold flex gap-1">下一步 <ShieldAlert size={14}/></button></div>
-                        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                           {activeC.messages.length===0 && <div className="text-center text-slate-500 mt-20"><p>無對話紀錄</p><button onClick={()=>setShowImport(true)} className="bg-pink-600 text-white px-4 py-2 rounded-full mt-4 flex gap-2 mx-auto"><Upload size={16}/> 匯入對話 (照片/影片)</button></div>}
-                           {activeC.messages.map(m=><div key={m.id} className={`flex ${m.sender==='user'?'justify-end':'justify-start'}`}><div className={`max-w-[70%] p-2 px-3 rounded-lg text-sm ${m.sender==='user'?'bg-pink-600 text-white':'bg-slate-800 text-slate-200 border border-slate-700'}`}>{m.text}</div></div>)}
-                        </div>
-                        <div className="p-4 border-t border-slate-700"><button onClick={()=>setShowImport(true)} className="bg-slate-800 text-slate-300 p-2 rounded-full"><Upload size={20}/></button></div>
-                      </>
-                  ) : <div className="flex-1 flex items-center justify-center text-slate-500">請選擇對象</div>}
-               </div>
-               {showImport && (
-                   <div className="absolute inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
-                       <div className="bg-slate-800 p-6 rounded-xl border border-slate-600 w-full max-w-md">
-                           <h3 className="text-white font-bold mb-4 flex gap-2"><Upload/> 匯入對話媒體</h3>
-                           <p className="text-xs text-slate-400 mb-4">支援 .jpg, .png, .mp4 (建議 &lt;10MB)</p>
-                           {!preview ? (
-                             <input type="file" accept="image/*,video/*" onChange={handleFileSelect} className="block w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-pink-600 file:text-white hover:file:bg-pink-700 mb-4"/>
-                           ) : (
-                             <div className="mb-4 relative">
-                               {file.type.startsWith('video') ? <video src={preview} controls className="w-full max-h-48 object-contain bg-black rounded" /> : <img src={preview} className="w-full max-h-48 object-contain bg-black rounded" />}
-                               <button onClick={()=>{setFile(null);setPreview(null)}} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1"><X size={12}/></button>
-                             </div>
-                           )}
-                           <div className="flex gap-2">
-                             <button onClick={handleAnalyze} disabled={!file||analyzing} className="flex-1 bg-pink-600 text-white py-2 rounded flex items-center justify-center gap-2">{analyzing?<Loader2 className="animate-spin"/>:<Zap size={16}/>} {analyzing?'AI 分析中...':'開始辨識'}</button>
-                             <button onClick={()=>{setShowImport(false);setFile(null);setPreview(null)}} className="flex-1 bg-slate-600 text-white py-2 rounded">取消</button>
-                           </div>
-                       </div>
-                   </div>
-               )}
-            </div>
-          );
-        };
-
-        const Step3ScamCheck = ({ candidates, onNext }) => {
-           const [loading, setLoading] = useState(true);
-           const [res, setRes] = useState([]);
-           useEffect(()=>{ analyzeScamRisk(candidates).then(r=>{setRes(r);setLoading(false);}) },[]);
-           if(loading) return <div className="h-64 flex flex-col items-center justify-center"><Loader2 className="animate-spin text-pink-500 w-12 h-12"/><p className="text-slate-400 mt-4">正在分析詐騙風險...</p></div>;
-           return (
-               <div className="max-w-4xl mx-auto">
-                   <h2 className="text-3xl font-bold text-white text-center mb-8">詐騙檢測報告</h2>
-                   <div className="grid md:grid-cols-2 gap-4 mb-8">{res.map(c=><div key={c.id} className={`p-4 rounded-xl border ${c.scamReport?.riskScore>50?'border-red-500 bg-red-900/20':'border-green-500 bg-green-900/20'}`}><h3 className="text-white font-bold">{c.name}</h3><div className="text-sm text-slate-300 mt-2">{c.scamReport?.analysis}</div><div className="mt-2 text-xs font-bold uppercase">{c.scamReport?.riskLevel} Risk</div></div>)}</div>
-                   <div className="text-center"><button onClick={()=>onNext(res)} className="bg-blue-600 px-8 py-2 rounded-full text-white font-bold">查看匹配度</button></div>
-               </div>
-           );
-        };
-
-        const Step4Analysis = ({ profile, candidates, onNext }) => {
-           const [loading, setLoading] = useState(true);
-           const [ranked, setRanked] = useState([]);
-           useEffect(()=>{ analyzeAndRankCandidates(profile, candidates).then(r=>{setRanked(r);setLoading(false);}) },[]);
-           if(loading) return <div className="h-64 flex flex-col items-center justify-center"><Loader2 className="animate-spin text-purple-500 w-12 h-12"/><p className="text-slate-400 mt-4">計算靈魂伴侶指數...</p></div>;
-           return (
-               <div className="max-w-4xl mx-auto">
-                   <h2 className="text-3xl font-bold text-white text-center mb-8">匹配結果</h2>
-                   <div className="space-y-4 mb-8">{ranked.map((c,i)=><div key={c.id} className="bg-slate-800 p-4 rounded-xl border border-slate-700 flex justify-between items-center"><div className="flex items-center gap-4"><div className="text-2xl font-bold text-slate-500">#{i+1}</div><div><h3 className="text-xl font-bold text-white">{c.name}</h3><p className="text-xs text-slate-400">{c.compatibilityReason}</p></div></div><div className="text-2xl font-bold text-green-400">{c.compatibilityScore}%</div></div>)}</div>
-                   <div className="text-center"><button onClick={()=>onNext(ranked)} className="bg-purple-600 px-8 py-2 rounded-full text-white font-bold">生成未來劇本</button></div>
-               </div>
-           );
-        };
-
-        const Step5Video = ({ profile, candidates }) => {
-           const [stories, setStories] = useState([]);
-           const [loading, setLoading] = useState(true);
-           const [generatingVideo, setGeneratingVideo] = useState({});
-           useEffect(()=>{ Promise.all(candidates.map(async c=>({c, story: await generateLifeStory(profile,c)}))).then(r=>{setStories(r);setLoading(false);}) },[]);
-           const handleGenerateVideo = (id) => { setGeneratingVideo(prev => ({...prev, [id]: 'loading'})); setTimeout(() => { setGeneratingVideo(prev => ({...prev, [id]: 'done'})); }, 3000); };
-           if(loading) return <div className="h-64 flex flex-col items-center justify-center"><Loader2 className="animate-spin text-pink-500 w-12 h-12"/><p className="text-slate-400 mt-4">撰寫劇本中...</p></div>;
-           return (
-               <div className="max-w-5xl mx-auto pb-20">
-                   <h2 className="text-3xl font-bold text-white text-center mb-8">未來劇本與模擬影片 (Veo)</h2>
-                   <div className="space-y-8">{stories.map((s,i)=>(
-                       <div key={i} className="bg-slate-900 p-6 rounded-xl border border-slate-700 flex gap-6">
-                           <div className="w-1/2"><h3 className="text-xl font-bold text-white mb-2">{s.c.name} 的劇本</h3><div className="h-64 overflow-y-auto text-sm text-slate-300 whitespace-pre-line bg-slate-950 p-4 rounded border border-slate-800">{s.story}</div><button onClick={()=>handleGenerateVideo(s.c.id)} disabled={generatingVideo[s.c.id]} className="mt-4 w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 rounded flex justify-center items-center gap-2">{generatingVideo[s.c.id] === 'loading' ? <Loader2 className="animate-spin"/> : <Clapperboard size={18}/>}{generatingVideo[s.c.id] === 'loading' ? '正在渲染影片...' : generatingVideo[s.c.id] === 'done' ? '重新生成' : '生成影片 (Veo)'}</button></div>
-                           <div className="w-1/2 bg-black rounded-xl flex items-center justify-center border border-slate-800 relative overflow-hidden">{generatingVideo[s.c.id] === 'done' ? (<video src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4" autoPlay loop muted className="w-full h-full object-cover opacity-80"/>) : (<div className="text-center text-slate-500"><Play size={48} className="mx-auto mb-2 opacity-30"/><p>影片預覽區</p></div>)}</div>
-                       </div>
-                   ))}</div>
-                   <div className="text-center mt-12"><button onClick={()=>window.location.reload()} className="text-slate-500 hover:text-white">重新開始</button></div>
-               </div>
-           );
-        };
-
-        const App = () => {
-          const [step, setStep] = useState(1);
-          const [profile, setProfile] = useState(null);
-          const [candidates, setCandidates] = useState([]);
-          const [top, setTop] = useState([]);
-          return (
-            <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
-              <header className="bg-slate-900 border-b border-slate-800 p-4 mb-6"><div className="max-w-7xl mx-auto flex items-center gap-2"><HeartHandshake className="text-pink-500"/><h1 className="text-xl font-bold">Soulmate AI</h1></div></header>
-              <main className="p-4">
-                {step===1 && <Step1Profile onComplete={(p,q)=>{setProfile(p); setStep(2);}} />}
-                {step===2 && <Step2Chat candidates={candidates} setCandidates={setCandidates} onNext={()=>setStep(3)} />}
-                {step===3 && <Step3ScamCheck candidates={candidates} onNext={(r)=>{setCandidates(r); setStep(4);}} />}
-                {step===4 && <Step4Analysis profile={profile} candidates={candidates} onNext={(r)=>{setTop(r); setStep(5);}} />}
-                {step===5 && <Step5Video profile={profile} candidates={top} />}
-              </main>
-            </div>
-          );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+              const results = JSON.parse(r.response.text().replace(/```json|```/g, '').trim());
+              return candidates.map(c => { const res = results.find(a
