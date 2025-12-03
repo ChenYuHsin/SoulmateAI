@@ -1,165 +1,39 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
-<head>
+<html lang="en">
+  <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Soulmate AI: The Deep Matchmaker</title>
-    
+    <title>Soulmate AI</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-    <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@18.2.0",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "@google/generative-ai": "https://esm.sh/@google/generative-ai@0.12.0",
-        "lucide-react": "https://esm.sh/lucide-react@0.330.0"
-      }
-    }
-    </script>
-
     <style>
-      body { background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
-      .animate-fade-in { animation: fadeIn 0.5s ease-in-out; }
-      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-      #error-box { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 9999; padding: 40px; }
-      .error-content { background: #330000; border: 1px solid red; color: #ffcccc; padding: 20px; max-width: 600px; margin: 100px auto; border-radius: 8px; font-family: monospace; white-space: pre-wrap; }
+      body {
+        background-color: #0f172a;
+        color: #e2e8f0;
+        font-family: 'Inter', sans-serif;
+      }
+      /* Custom scrollbar for chat windows */
+      .scrollbar-hide::-webkit-scrollbar {
+          display: none;
+      }
+      .scrollbar-hide {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+      }
     </style>
+  <script type="importmap">
+{
+  "imports": {
+    "uuid": "https://aistudiocdn.com/uuid@^13.0.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.554.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
+  }
+}
+</script>
 </head>
-<body>
+  <body>
     <div id="root"></div>
-    <div id="error-box"><div class="error-content" id="error-msg"></div></div>
-
-    <script>
-      window.onerror = function(msg, url, line, col, error) {
-        const box = document.getElementById('error-box');
-        const txt = document.getElementById('error-msg');
-        box.style.display = 'block';
-        txt.innerText = `⚠️ 程式錯誤 (Error):\n${msg}\n\nLine: ${line}\n\n建議：請確認 API Key 是否正確。`;
-        return false;
-      };
-    </script>
-
-    <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useRef } from 'react';
-        import ReactDOM from 'react-dom/client';
-        import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
-        import { 
-            User, Heart, Compass, Sparkles, Loader2, Brain, Briefcase, Ruler, MapPin, 
-            Cigarette, Wine, Baby, BookOpen, MessageSquare, ShieldAlert, Zap, UserPlus, 
-            Upload, X, Check, ArrowRight, Plus, Clapperboard, Play, HeartHandshake 
-        } from "lucide-react";
-
-        const getApiKey = () => {
-            let key = localStorage.getItem('gemini_api_key');
-            if (!key) {
-                key = prompt("【Soulmate AI 安全啟動】\n\n請輸入您的 Google Gemini API Key 以繼續：\n(您的 Key 只會存在您的瀏覽器中，不會上傳伺服器)");
-                if (key) {
-                    localStorage.setItem('gemini_api_key', key);
-                } else {
-                    alert("未輸入 API Key，App 無法連線。請重新整理頁面輸入。");
-                    throw new Error("User cancelled API Key input");
-                }
-            }
-            return key;
-        };
-
-        // --- AI 核心 ---
-        const getModel = (modelName = "gemini-1.5-flash", jsonMode = true) => {
-          const apiKey = getApiKey();
-          const genAI = new GoogleGenerativeAI(apiKey);
-          const safetySettings = [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ];
-          // 移除 jsonMode 的 responseMimeType 強制設定，避免部分舊版 API 不支援
-          // 改由 Prompt 引導輸出 JSON
-          return genAI.getGenerativeModel({ model: modelName, safetySettings });
-        };
-
-        const compressImage = async (file) => {
-            return new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-                reader.onload = (event) => {
-                    const img = new Image();
-                    img.src = event.target.result;
-                    img.onload = () => {
-                        const canvas = document.createElement('canvas');
-                        const MAX_WIDTH = 800; // 再縮小一點確保通過
-                        const scaleSize = MAX_WIDTH / img.width;
-                        canvas.width = MAX_WIDTH;
-                        canvas.height = img.height * scaleSize;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-                        resolve({
-                            inlineData: { data: dataUrl.split(',')[1], mimeType: 'image/jpeg' }
-                        });
-                    };
-                };
-            });
-        };
-
-        // 1. 媒體辨識 (Step 2 修復版)
-        const extractChatFromMedia = async (file) => {
-            try {
-                const model = getModel("gemini-1.5-flash", false); // 關閉 JSON mode 避免 404
-                
-                let mediaPart;
-                if (file.type.startsWith('image/')) {
-                    mediaPart = await compressImage(file);
-                } else {
-                    if (file.size > 10 * 1024 * 1024) throw new Error("影片過大 (>10MB)。請改用「截圖」或「短影片」。");
-                    mediaPart = await new Promise((resolve) => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => resolve({ inlineData: { data: reader.result.split(',')[1], mimeType: file.type } });
-                        reader.readAsDataURL(file);
-                    });
-                }
-
-                const prompt = `Analyze this chat image/video. Transcribe conversation to a valid JSON Array string. Format: [{"sender": "user"|"partner", "text": "content"}]. Rules: 'user' is usually right/green/blue side. Output ONLY the JSON string.`;
-                const result = await model.generateContent([prompt, mediaPart]);
-                const text = result.response.text().replace(/```json|```/g, '').trim();
-                return JSON.parse(text);
-            } catch (e) {
-                console.error(e);
-                let msg = "辨識失敗。";
-                if(e.message.includes("413")) msg = "檔案太大了。";
-                else if(e.message.includes("404")) msg = "找不到模型 (404)。請稍後再試。";
-                else if(e.message.includes("400")) msg = "API Key 可能權限不足。";
-                alert(msg + "\n詳細錯誤：" + e.message);
-                return [];
-            }
-        };
-
-        // 2. 生成問題
-        const generateScreeningQuestions = async (profile) => {
-          const model = getModel("gemini-1.5-flash", false);
-          const prompt = `User: ${JSON.stringify(profile)}. Generate 5 screening questions (Traditional Chinese). Return a valid JSON Array of strings. Output ONLY the JSON string.`;
-          try { const r = await model.generateContent(prompt); return JSON.parse(r.response.text().replace(/```json|```/g, '').trim()); } catch (e) { return ["請分享你最長的一段感情？", "你週末通常怎麼過？"]; }
-        };
-
-        // 3. 詐騙分析
-        const analyzeScamRisk = async (candidates) => {
-          const model = getModel("gemini-1.5-flash", false);
-          const analyzed = await Promise.all(candidates.map(async (c) => {
-            if (c.messages.length === 0) return c;
-            const prompt = `Analyze scam risk. Name: ${c.name}. Chat: ${c.messages.map(m=>m.text).join('\n')}. Return JSON: { "riskScore": number(0-100), "riskLevel": "Low"|"Medium"|"High", "analysis": "Chinese string" }. Output ONLY JSON.`;
-            try { const r = await model.generateContent(prompt); return { ...c, scamReport: JSON.parse(r.response.text().replace(/```json|```/g, '').trim()) }; } catch(e) { return c; }
-          }));
-          return analyzed;
-        };
-
-        // 4. 排名
-        const analyzeAndRankCandidates = async (profile, candidates) => {
-          const model = getModel("gemini-1.5-flash", false);
-          const data = candidates.map(c => ({ id: c.id, name: c.name, chat: c.messages.map(m=>m.text).join('\n') }));
-          const prompt = `Matchmaker. User: ${JSON.stringify(profile)}. Candidates: ${JSON.stringify(data)}. Rank top 3. Return JSON Array: [{ "id": "...", "compatibilityScore": number, "compatibilityReason": "string" }]. Output ONLY JSON.`;
-          try { 
-              const r = await model.generateContent(prompt);
-              const results = JSON.parse(r.response.text().replace(/```json|```/g, '').trim());
-              return candidates.map(c => { const res = results.find(a
+  </body>
+</html>
